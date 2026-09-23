@@ -1,7 +1,7 @@
 import { Fragment, memo, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { JsonBlock, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { MarkdownFileMentions, MarkdownPathImages } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MarkdownFileMentions, MarkdownPathImages, MarkdownPathLinks } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeOwnerProps, ChatViewSlotProps } from '../contract/slots.ts'
 import type { AssistantBlock } from '../contract/snapshot.ts'
 import { markdownLabels } from '../markdown-labels.ts'
@@ -23,6 +23,54 @@ export function localPathMediaUrl(protocol: string, origin: string, value: strin
   if (protocol !== 'http:' && protocol !== 'https:') return undefined
   if (value.length === 0 || !value.startsWith('/') || value.startsWith('//')) return undefined
   return `${origin}/api/file?path=${encodeURIComponent(value)}`
+}
+
+/** Host route revealing one path in Windows Explorer (`@deepseek-ai/dsh-host-open-in-app/shared`). */
+const REVEAL_ROUTE = '/open-in-app/reveal'
+
+/**
+ * The Host path an authored link destination or inline-code token names.
+ * @param value - Exactly as written: `/abs/path`, `~/path`, or
+ * `file:///abs/path`, optionally suffixed `:line[:col]` or `#L…`.
+ * @returns The path without its location suffix, or undefined for anything
+ * else (URLs, relative paths, commands with arguments, UNC `//` paths).
+ */
+export function localPathTarget(value: string): string | undefined {
+  let path: string
+  if (value.startsWith('file://')) {
+    let url: URL
+    try {
+      url = new URL(value)
+    } catch {
+      // Not a parseable file URL: nothing local to name.
+      return undefined
+    }
+    if (url.host !== '' && url.host !== 'localhost') return undefined
+    try {
+      path = decodeURIComponent(url.pathname)
+    } catch {
+      // Malformed percent-escape: not a path we can name faithfully.
+      return undefined
+    }
+  } else if ((value.startsWith('/') && !value.startsWith('//')) || value.startsWith('~/')) {
+    if (/\s/.test(value)) return undefined
+    path = value
+  } else {
+    return undefined
+  }
+  path = path.replace(/#L\d.*$/, '').replace(/:\d+(?::\d+)?$/, '')
+  return path === '' || path === '/' ? undefined : path
+}
+
+/** Ask the Host to show one path in Explorer; failures only log (the link has no error state). */
+function revealPath(origin: string, path: string): void {
+  void fetch(`${origin}${REVEAL_ROUTE}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path }),
+  }).then(async (response) => {
+    if (!response.ok) console.warn(`reveal ${path}: ${String(response.status)} ${await response.text()}`)
+  }, (error: unknown) => { console.warn(`reveal ${path}:`, error) })
 }
 
 export interface AssistantMarkdownProps {
@@ -57,6 +105,21 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
     const { protocol, origin } = window.location
     return { resolve: value => localPathMediaUrl(protocol, origin, value) }
   }, [])
+  // Host paths in prose (links or inline code) reveal in Explorer through the
+  // Host: the browser may run on another OS than the Host, and cannot
+  // navigate an http page to file:// anyway. The reveal route answers 501
+  // off WSL, so there the click is a logged no-op.
+  const pathLinks = useMemo<MarkdownPathLinks>(() => {
+    const { protocol, origin } = window.location
+    return {
+      resolve: (value) => {
+        if (protocol !== 'http:' && protocol !== 'https:') return undefined
+        const path = localPathTarget(value)
+        if (path === undefined) return undefined
+        return { open: () => { revealPath(origin, path) }, label: `Show ${path} in Explorer`, title: `${path} — show in Explorer` }
+      },
+    }
+  }, [])
   const last = blocks.length - 1
   // Tool-call heads render as tool rows in the chat view's grouping pass, so
   // a node that is only those heads (or empty) would paint an empty root
@@ -79,6 +142,7 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
             labels={labels}
             fileMentions={mentions}
             pathImages={pathImages}
+            pathLinks={pathLinks}
           />,
         )
         break

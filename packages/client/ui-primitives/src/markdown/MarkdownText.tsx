@@ -19,11 +19,11 @@ import {
   collectReferenceTargets, createReferenceTargets, renderBlocks, renderFootnoteSection,
   wrapBlockChildren,
 } from './render.tsx'
-import type { MarkdownFileMentions, MarkdownLabels, MarkdownPathImages, MarkdownRenderContext, ReferenceTargets } from './render.tsx'
+import type { MarkdownFileMentions, MarkdownLabels, MarkdownPathImages, MarkdownPathLinks, MarkdownRenderContext, ReferenceTargets } from './render.tsx'
 import 'katex/dist/katex.min.css'
 import css from './MarkdownText.module.css'
 
-export type { MarkdownCodeLabels, MarkdownFileMentions, MarkdownLabels, MarkdownPathImages } from './render.tsx'
+export type { MarkdownCodeLabels, MarkdownFileMentions, MarkdownLabels, MarkdownPathImages, MarkdownPathLinks } from './render.tsx'
 
 /** One settled full render: parse with math, resolve references, append the footnote section. */
 function renderSettled(
@@ -31,6 +31,7 @@ function renderSettled(
   labels: MarkdownLabels,
   fileMentions: MarkdownFileMentions | undefined,
   pathImages: MarkdownPathImages | undefined,
+  pathLinks: MarkdownPathLinks | undefined,
 ): ReactNode[] {
   const root = parseGfmWithMath(text)
   const targets = createReferenceTargets()
@@ -40,6 +41,7 @@ function renderSettled(
     labels,
     fileMentions,
     pathImages,
+    pathLinks,
     targets,
     footnoteOrder: [],
     footnoteCounts: new Map(),
@@ -156,7 +158,8 @@ class StreamingRenderer {
  * identity discards the streaming render cache mid-message. `fileMentions`
  * links inline-code tokens its resolver recognizes as real files, and
  * `pathImages` rewrites image destinations that are local file paths into
- * displayable URLs its resolver vouches for; both vocabularies are the
+ * displayable URLs its resolver vouches for, and `pathLinks` turns links and
+ * inline-code tokens naming Host paths into openers; the vocabularies are the
  * single streaming gate — they apply to settled renders only, because a
  * streaming message's vocabulary is not final and frozen cached elements
  * must not bake in handlers that could go stale.
@@ -164,25 +167,26 @@ class StreamingRenderer {
  * relative links, and unsafe protocols are disabled, while absolute HTTP(S)
  * images render directly.
  */
-export const MarkdownText = memo(function MarkdownText({ text, streaming = false, labels, fileMentions, pathImages }: {
+export const MarkdownText = memo(function MarkdownText({ text, streaming = false, labels, fileMentions, pathImages, pathLinks }: {
   text: string
   streaming?: boolean
   labels: MarkdownLabels
   fileMentions?: MarkdownFileMentions | undefined
   pathImages?: MarkdownPathImages | undefined
+  pathLinks?: MarkdownPathLinks | undefined
 }) {
   const streamRef = useRef<StreamingRenderer | null>(null)
   const streamLabelsRef = useRef<MarkdownLabels>(labels)
   const children = useMemo(() => {
     if (!streaming) {
       streamRef.current = null
-      return renderSettled(text, labels, fileMentions, pathImages)
+      return renderSettled(text, labels, fileMentions, pathImages, pathLinks)
     }
     if (streamRef.current === null || streamLabelsRef.current !== labels) {
       streamRef.current = new StreamingRenderer(labels)
       streamLabelsRef.current = labels
     }
     return streamRef.current.render(text)
-  }, [text, streaming, labels, fileMentions, pathImages])
+  }, [text, streaming, labels, fileMentions, pathImages, pathLinks])
   return <div className={css.markdown}>{children}</div>
 })

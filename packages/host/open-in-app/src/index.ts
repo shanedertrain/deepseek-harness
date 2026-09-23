@@ -11,7 +11,9 @@
  * any resolution result, icon, or launch is reachable. On top of that fence
  * the open route validates its body at the wire: an `application/json` media
  * type, a 64 KiB ceiling, string `app`/`path` fields, a resolved-available
- * catalog id, and an absolute path naming an existing directory.
+ * catalog id, and an absolute path naming an existing directory. The reveal
+ * route (WSL Hosts only, `reveal.ts`) takes the same fence and wire checks
+ * and shows one existing path in Windows Explorer.
  *
  * The catalog resolves lazily, once per plugin life, on the first request
  * that needs it, into one map of verified launchers: the apps route serves
@@ -36,8 +38,9 @@ import {
 import { extractAppIcon, type OpenInAppIcon } from './icons.ts'
 import { internals } from './internals.ts'
 import {
-  OPEN_IN_APP_APPS_ROUTE, OPEN_IN_APP_ICON_PREFIX, OPEN_IN_APP_OPEN_ROUTE,
+  OPEN_IN_APP_APPS_ROUTE, OPEN_IN_APP_ICON_PREFIX, OPEN_IN_APP_OPEN_ROUTE, OPEN_IN_APP_REVEAL_ROUTE,
 } from './shared.ts'
+import { defaultRevealInternals, revealInExplorer } from './reveal.ts'
 
 export type * from './shared.ts'
 
@@ -134,7 +137,21 @@ function parseOpenBody(text: string): { app: string; path: string } | null {
   return typeof app === 'string' && typeof path === 'string' ? { app, path } : null
 }
 
-/** Register the apps, icon, and open routes behind the connection trust fence. */
+/** Validate one reveal-route body at the wire: JSON object with a string path. */
+function parseRevealBody(text: string): { path: string } | null {
+  let body: unknown
+  try {
+    body = JSON.parse(text)
+  } catch {
+    // Swallows the parse error: a non-JSON body is exactly the null case.
+    return null
+  }
+  if (typeof body !== 'object' || body === null) return null
+  const { path } = body as { path?: unknown }
+  return typeof path === 'string' ? { path } : null
+}
+
+/** Register the apps, icon, open, and reveal routes behind the connection trust fence. */
 export function apply(ctx: Context, config: Config): void {
   const ssh = launchedThroughSsh(launchEnvironmentOf(ctx))
   /** Test-seam facts completed with the composition's PATH resolver. */
@@ -308,4 +325,55 @@ export function apply(ctx: Context, config: Config): void {
       }
     },
   }), `open-in-app: POST ${OPEN_IN_APP_OPEN_ROUTE}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: OPEN_IN_APP_REVEAL_ROUTE,
+    handler: async (req, res) => {
+      if (rejected(req, res)) return
+      if (req.method !== 'POST') {
+        sendMethodNotAllowed(res, 'POST')
+        return
+      }
+      const essence = String(req.headers['content-type']).split(';', 1)[0]?.trim().toLowerCase()
+      if (essence !== 'application/json') {
+        sendJson(res, 415, { code: 'unsupported-media-type', message: 'content-type must be application/json' })
+        return
+      }
+      let text: string | null
+      try {
+        text = await readBoundedBody(req)
+      } catch {
+        // Swallows connection errors mid-body: there is nothing left to answer precisely.
+        sendJson(res, 400, { code: 'bad-request', message: 'request body unreadable' })
+        return
+      }
+      if (text === null) {
+        sendJson(res, 413, { code: 'payload-too-large', message: 'request body is too large' })
+        return
+      }
+      const parsed = parseRevealBody(text)
+      if (parsed === null) {
+        sendJson(res, 400, { code: 'bad-request', message: 'request body must be JSON with string "path"' })
+        return
+      }
+      const outcome = await revealInExplorer(parsed.path, { ...defaultRevealInternals, ...internals.reveal })
+      switch (outcome.kind) {
+        case 'revealed':
+          sendJson(res, 200, { ok: true })
+          return
+        case 'unsupported':
+          sendJson(res, 501, { code: 'unsupported', message: 'reveal needs a WSL Host' })
+          return
+        case 'bad-path':
+          sendJson(res, 400, { code: 'bad-request', message: 'path must be absolute or ~/-relative' })
+          return
+        case 'not-found':
+          sendJson(res, 404, { code: 'not-found', message: `path does not exist: ${parsed.path}` })
+          return
+        case 'failed':
+          sendJson(res, 502, { code: 'launch-failed', message: outcome.message })
+      }
+    },
+  }), `open-in-app: POST ${OPEN_IN_APP_REVEAL_ROUTE}`)
 }

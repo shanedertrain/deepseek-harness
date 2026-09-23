@@ -155,6 +155,22 @@ export interface MarkdownPathImages {
 }
 
 /**
+ * Local-path link affordance: the owner resolves an authored link destination
+ * or inline-code token that names a Host path (`/abs/path`, `~/path`,
+ * `file:///abs/path`) to an opener. The renderer's URL allowlist drops such
+ * destinations, so without an owner they stay inert, as before.
+ */
+export interface MarkdownPathLinks {
+  /**
+   * Resolve one authored destination or token.
+   * @param value - Exactly as the markdown author wrote it.
+   * @returns The opener with its accessible label and title, or undefined
+   * when the value names no local path.
+   */
+  resolve(value: string): { open: () => void; label: string; title: string } | undefined
+}
+
+/**
  * File-mention affordance for inline code: the owner resolves an authored
  * token to the file it names, using its own vocabulary of real files — the
  * renderer never guesses at what looks like a path.
@@ -184,6 +200,8 @@ export interface MarkdownRenderContext {
   readonly fileMentions: MarkdownFileMentions | undefined
   /** Local-path image vocabulary; absent wherever no rewriting owner exists. */
   readonly pathImages: MarkdownPathImages | undefined
+  /** Local-path link vocabulary; absent wherever no opener exists. */
+  readonly pathLinks?: MarkdownPathLinks | undefined
   /** Inside an anchor's children: interactive mentions must not nest there. */
   readonly inLink?: boolean
   /** Reference targets visible to this pass. */
@@ -319,6 +337,25 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
           </code>
         )
       }
+      // An absolute Host path the owner can open (e.g. reveal in the OS file
+      // manager) gets the same button chrome as a file mention.
+      const local = context.inLink === true ? undefined : context.pathLinks?.resolve(value)
+      if (local !== undefined) {
+        return (
+          <code key={key}>
+            <button
+              type="button"
+              className={css.fileMention}
+              title={local.title}
+              aria-label={local.label}
+              onClick={local.open}
+            >
+              <LinkIcon kind={classifyLinkPath(value)} className={css.linkIcon} />
+              {value}
+            </button>
+          </code>
+        )
+      }
       return <code key={key}>{value}</code>
     }
     case 'html':
@@ -338,7 +375,10 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
     case 'table':
       return renderTable(node, key, context)
     case 'link':
-      return renderAnchor(node.url, renderChildren(node.children, { ...context, inLink: true }), key, !anchorWrapsOnlyImages(node.children))
+      return renderAnchor(
+        node.url, renderChildren(node.children, { ...context, inLink: true }), key,
+        !anchorWrapsOnlyImages(node.children), context.pathLinks,
+      )
     case 'linkReference':
       return renderLinkReference(node, key, context)
     case 'image':
@@ -542,8 +582,28 @@ function renderSafeLink(href: string, children: ReactNode[], key: Key, glyph = t
   )
 }
 
-/** Anchor over a parsed markdown destination, which hast normalized before the allowlist saw it. */
-function renderAnchor(url: string, children: ReactNode[], key: Key, glyph = true): ReactNode {
+/**
+ * Anchor over a parsed markdown destination, which hast normalized before the
+ * allowlist saw it. A destination the owner's path-link vocabulary resolves
+ * becomes a button instead: the allowlist would otherwise drop it to text.
+ */
+function renderAnchor(url: string, children: ReactNode[], key: Key, glyph = true, pathLinks?: MarkdownPathLinks): ReactNode {
+  const local = pathLinks?.resolve(url)
+  if (local !== undefined) {
+    return (
+      <button
+        key={key}
+        type="button"
+        className={css.fileMention}
+        title={local.title}
+        aria-label={local.label}
+        onClick={local.open}
+      >
+        {glyph && <LinkIcon kind={classifyLinkPath(url)} className={css.linkIcon} />}
+        {children}
+      </button>
+    )
+  }
   return renderSafeLink(normalizeUri(url), children, key, glyph)
 }
 
@@ -608,7 +668,7 @@ function renderLinkReference(
     return <Fragment key={key}>{'['}{renderChildren(node.children, context)}{referenceSuffix(node)}</Fragment>
   }
   const rendered = renderChildren(node.children, { ...context, inLink: true })
-  return renderAnchor(definition.url, rendered, key, !anchorWrapsOnlyImages(node.children))
+  return renderAnchor(definition.url, rendered, key, !anchorWrapsOnlyImages(node.children), context.pathLinks)
 }
 
 function renderImageReference(

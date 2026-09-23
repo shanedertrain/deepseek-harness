@@ -38,6 +38,7 @@ afterEach(async () => {
   if (root !== undefined) await rm(root, { recursive: true, force: true })
   root = undefined
   internals.catalog = {}
+  internals.reveal = {}
   trust.rejection = undefined
   vi.unstubAllEnvs()
 })
@@ -180,6 +181,7 @@ describe('open-in-app host routes (real Loader composition)', () => {
     expect((await fetch(`${base}/open-in-app/apps`)).status).toBe(403)
     expect((await fetch(`${base}/open-in-app/icon/finder`)).status).toBe(403)
     expect((await fetch(`${base}/open-in-app/open`, { method: 'POST' })).status).toBe(403)
+    expect((await fetch(`${base}/open-in-app/reveal`, { method: 'POST' })).status).toBe(403)
     // Rejected requests never reached the lazy catalog resolution.
     expect(run).not.toHaveBeenCalled()
     trust.rejection = 401
@@ -488,5 +490,56 @@ describe('open-in-app host routes (real Loader composition)', () => {
     expect((await fetch(`${base}/open-in-app/apps`)).status).toBe(404)
     expect((await fetch(`${base}/open-in-app/icon/cursor`)).status).toBe(404)
     expect((await fetch(`${base}/open-in-app/open`, { method: 'POST' })).status).toBe(404)
+    expect((await fetch(`${base}/open-in-app/reveal`, { method: 'POST' })).status).toBe(404)
+  })
+
+  it('reveals an existing file or directory in Explorer on a WSL Host, and validates the wire', async () => {
+    internals.catalog = { platform: 'aix', resolveExecutable: pathTable() }
+    const launches: string[][] = []
+    internals.reveal = {
+      env: { WSL_DISTRO_NAME: 'Distro' },
+      platform: 'linux',
+      home: '/home/u',
+      kind: path => Promise.resolve(path === '/home/u/a.txt' ? 'file' : path === '/home/u/dir' ? 'directory' : undefined),
+      run: (_command, args) => Promise.resolve(`\\\\wsl.localhost\\Distro${String(args[1]).replaceAll('/', '\\')}\n`),
+      launch: (command, args) => { launches.push([command, ...args]) },
+    }
+    const base = await boot()
+    const post = (body: string, type = 'application/json'): Promise<Response> =>
+      fetch(`${base}/open-in-app/reveal`, { method: 'POST', headers: { 'content-type': type }, body })
+    expect((await post(JSON.stringify({ path: '~/a.txt' }))).status).toBe(200)
+    expect((await post(JSON.stringify({ path: '/home/u/dir' }))).status).toBe(200)
+    expect(launches).toEqual([
+      ['explorer.exe', '/select,\\\\wsl.localhost\\Distro\\home\\u\\a.txt'],
+      ['explorer.exe', '\\\\wsl.localhost\\Distro\\home\\u\\dir'],
+    ])
+    expect((await post(JSON.stringify({ path: '/home/u/missing' }))).status).toBe(404)
+    expect((await post(JSON.stringify({ path: 'relative/x' }))).status).toBe(400)
+    expect((await post(JSON.stringify({ nope: 1 }))).status).toBe(400)
+    expect((await post('{', 'application/json')).status).toBe(400)
+    expect((await post('{}', 'text/plain')).status).toBe(415)
+    expect((await fetch(`${base}/open-in-app/reveal`)).status).toBe(405)
+    expect(launches).toHaveLength(2)
+  })
+
+  it('answers 501 off WSL and 502 when wslpath fails', async () => {
+    internals.catalog = { platform: 'aix', resolveExecutable: pathTable() }
+    internals.reveal = {
+      env: {}, platform: 'linux', kernelVersion: () => Promise.resolve('Linux version 6.8.0-generic'),
+      kind: () => Promise.resolve('file'), launch: () => { throw new Error('must not launch') },
+    }
+    const base = await boot()
+    const post = (): Promise<Response> => fetch(`${base}/open-in-app/reveal`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: '/x' }),
+    })
+    expect((await post()).status).toBe(501)
+    internals.reveal = {
+      ...internals.reveal,
+      kernelVersion: () => Promise.resolve('Linux version 6.6.87.2-microsoft-standard-WSL2'),
+      run: () => Promise.reject(new Error('wslpath: boom')),
+    }
+    const failed = await post()
+    expect(failed.status).toBe(502)
+    expect(((await failed.json()) as { message: string }).message).toMatch(/wslpath failed/)
   })
 })

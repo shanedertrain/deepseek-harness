@@ -13,6 +13,14 @@ export const OPEN_IN_APP_ICON_PREFIX = '/open-in-app/icon'
 /** POST route launching one application on one workspace directory. */
 export const OPEN_IN_APP_OPEN_ROUTE = '/open-in-app/open'
 
+/** POST route revealing one Linux path in Windows Explorer (WSL Hosts only). */
+export const OPEN_IN_APP_REVEAL_ROUTE = '/open-in-app/reveal'
+
+/** Reveal-route request body: an absolute POSIX path, or `~/`-relative. */
+export interface OpenInAppRevealPayload {
+  readonly path: string
+}
+
 /** Apps-route response: catalog ids probed as installed, in menu order. */
 export interface OpenInAppAppsPayload {
   readonly apps: readonly string[]
