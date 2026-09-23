@@ -6,7 +6,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
-import { createScope } from '@deepseek-ai/dsh-scope'
+import { createScope, scopeOf } from '@deepseek-ai/dsh-scope'
 import type { Config } from '@deepseek-ai/dsh-mcp-client'
 
 // ---- Mock MCP SDK ----
@@ -45,8 +45,10 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   Client: MockClient,
 }))
 
+const { MockStdioTransport } = vi.hoisted(() => ({ MockStdioTransport: vi.fn() }))
+
 vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
-  StdioClientTransport: vi.fn(),
+  StdioClientTransport: MockStdioTransport,
 }))
 
 vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
@@ -457,5 +459,81 @@ describe('apply (plugin lifecycle)', () => {
 
     expect(mockConnect).toHaveBeenCalled()
     expect(ctx.tools.get('mcp__web__remote')).toBeDefined()
+  })
+})
+
+describe('apply (perAgent)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockConnect.mockResolvedValue(undefined)
+    mockClose.mockResolvedValue(undefined)
+    mockListTools.mockResolvedValue({
+      tools: [{ name: 'remote', description: 'A remote tool', inputSchema: { type: 'object' } }],
+      nextCursor: undefined,
+    })
+  })
+
+  type Header = { id: string; cwd?: string; origin?: string; delegationDepth?: number }
+
+  // agent/created and agent/disposed are declared by dsh-agent, which this package does not depend on
+  const emitAgentEvent = (ctx: Context, event: string, agent: unknown): void => {
+    (ctx.emit as (thisArg: unknown, name: string, payload: unknown) => void).call(ctx, ctx, event, { agent })
+  }
+
+  function fakeAgents(ctx: Context) {
+    const live: { ctx: Context; session: { header: Header } }[] = []
+    ctx.provide('agents', { list: () => live } as never)
+    const spawn = (header: Header, emit: boolean) => {
+      const scope = createScope(ctx, {})
+      const agent = { ctx: scope.ctx, session: { header } }
+      live.push(agent)
+      if (emit) emitAgentEvent(ctx, 'agent/created', agent)
+      return { agent, scope }
+    }
+    return { spawn }
+  }
+
+  const perAgent: Config = { ...stdioConfig, perAgent: true, sessionIdEnv: 'XAGENT_CONVERSATION_ID', env: { A: '1' } }
+  const spawnedWith = () => MockStdioTransport.mock.calls.map(call => call[0] as { cwd: string; env: Record<string, string> })
+
+  it('spawns one server per top-level agent in its session cwd, with its session id', async () => {
+    const ctx = await mountRegistry()
+    const { spawn } = fakeAgents(ctx)
+    const early = spawn({ id: 's-early', cwd: '/work/one' }, false)
+    await apply(ctx, perAgent)
+    const late = spawn({ id: 's-late', cwd: '/work/two' }, true)
+    await sleep(20)
+
+    expect(ctx.tools.get('mcp__srv__remote')).toBeUndefined()
+    expect(ctx.tools.get('mcp__srv__remote', scopeOf(early.agent.ctx))).toBeDefined()
+    expect(ctx.tools.get('mcp__srv__remote', scopeOf(late.agent.ctx))).toBeDefined()
+    const spawns = spawnedWith()
+    expect(spawns.map(s => s.cwd)).toEqual(['/work/one', '/work/two'])
+    expect(spawns.map(s => s.env.XAGENT_CONVERSATION_ID)).toEqual(['s-early', 's-late'])
+    expect(spawns.every(s => s.env.A === '1')).toBe(true)
+  })
+
+  it('skips subagent children', async () => {
+    const ctx = await mountRegistry()
+    const { spawn } = fakeAgents(ctx)
+    await apply(ctx, perAgent)
+    const child = spawn({ id: 's-child', cwd: '/work', origin: 'subagent', delegationDepth: 1 }, true)
+    await sleep(20)
+
+    expect(MockStdioTransport).not.toHaveBeenCalled()
+    expect(ctx.tools.get('mcp__srv__remote', scopeOf(child.agent.ctx))).toBeUndefined()
+  })
+
+  it('closes an agent\'s server when the agent is disposed', async () => {
+    const ctx = await mountRegistry()
+    const { spawn } = fakeAgents(ctx)
+    await apply(ctx, perAgent)
+    const { agent } = spawn({ id: 's1', cwd: '/work' }, true)
+    await sleep(20)
+    emitAgentEvent(ctx, 'agent/disposed', agent)
+    await sleep(20)
+
+    expect(mockClose).toHaveBeenCalled()
+    expect(ctx.tools.get('mcp__srv__remote', scopeOf(agent.ctx))).toBeUndefined()
   })
 })

@@ -70,6 +70,16 @@ export interface StdioConfig {
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
+  /**
+   * Spawn one server per top-level Agent instead of one for the whole app. Each
+   * child starts in its session's `cwd` (falling back to `cwd` above), so a
+   * server that derives state from its launch directory -- an identity, a
+   * workspace -- gets one per session rather than one shared by all of them.
+   * Subagent children are skipped: they do not get this server's tools.
+   */
+  perAgent?: boolean
+  /** With `perAgent`: env var name that receives the session id; empty for none. */
+  sessionIdEnv?: string
 }
 
 /** Config for connecting to an MCP server over Streamable HTTP (SSE). */
@@ -121,6 +131,8 @@ export const Config = z.union([
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
     reconnect: Reconnect,
+    perAgent: z.boolean().default(false),
+    sessionIdEnv: z.string().default(''),
   }),
   z.object({
     transport: z.const('streamable-http'),
@@ -148,6 +160,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // construction that bypassed Schemastery) rejects THIS instance before any
   // effect registers.
   const reconnect = resolveReconnectPolicy(config.reconnect, `mcp-client(${config.serverName}): reconnect`)
+
+  if (config.transport === 'stdio' && config.perAgent) {
+    applyPerAgent(ctx, config)
+    return
+  }
 
   // Reserve the namespace next: a duplicate `serverName` fails THIS instance
   // at load with an actionable error and leaves the earlier instance intact.
@@ -185,4 +202,53 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   if (outcome.error !== undefined && config.failOnStartupError) {
     throw new Error(`mcp-client(${config.serverName}): initial connection or tool synchronization failed`, { cause: outcome.error })
   }
+}
+
+// ---- Per-Agent mode ----
+
+/** The slice of `@deepseek-ai/dsh-agent` this mode reads, kept structural to avoid a package dependency. */
+interface PerAgentTarget {
+  readonly ctx: Context
+  readonly session: {
+    readonly header: { readonly id: string; readonly cwd?: string; readonly origin?: string; readonly delegationDepth?: number }
+  }
+}
+
+interface AgentsScope {
+  readonly agents: { list(): Iterable<PerAgentTarget> }
+  on(name: 'agent/created' | 'agent/disposed', listener: (payload: { agent: PerAgentTarget }) => void): () => void
+  effect(execute: () => () => void, label: string): void
+}
+
+/** This module as a plugin, for mounting one ordinary instance inside each Agent scope. */
+const scopedPlugin = { name, inject, Config, apply }
+
+/**
+ * Mount an ordinary (not per-Agent) instance of this server in every live and
+ * later top-level Agent scope; the Agent scope owns its tools and child process.
+ * @param ctx - app context that exposes the `agents` service.
+ * @param config - the per-Agent stdio configuration.
+ */
+function applyPerAgent(ctx: Context, config: StdioConfig): void {
+  ctx.inject(['agents'], (raw) => {
+    const scope = raw as unknown as AgentsScope
+    const fibers = new Map<PerAgentTarget, { dispose(): unknown }>()
+    const mount = (agent: PerAgentTarget): void => {
+      const header = agent.session.header
+      if (fibers.has(agent) || header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0) return
+      const env = !config.sessionIdEnv ? config.env : { ...config.env, [config.sessionIdEnv]: header.id }
+      const child: StdioConfig = { ...config, perAgent: false, cwd: header.cwd ?? config.cwd, env }
+      fibers.set(agent, agent.ctx.plugin(scopedPlugin, child))
+    }
+    for (const agent of scope.agents.list()) mount(agent)
+    scope.on('agent/created', ({ agent }) => { mount(agent) })
+    scope.on('agent/disposed', ({ agent }) => {
+      void fibers.get(agent)?.dispose()
+      fibers.delete(agent)
+    })
+    scope.effect(() => () => {
+      for (const fiber of fibers.values()) void fiber.dispose()
+      fibers.clear()
+    }, 'mcp-client.perAgent')
+  })
 }
