@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AssistantMarkdown, localPathTarget } from '../src/client/chat/AssistantMarkdown.tsx'
+import { AssistantMarkdown, inlineCodePathTarget, localPathTarget } from '../src/client/chat/AssistantMarkdown.tsx'
 import type { ChatNodeOwnerProps, ChatViewSlotProps } from '../src/client/contract/slots.ts'
 import type { AssistantBlock } from '../src/client/contract/snapshot.ts'
 
@@ -42,6 +42,22 @@ describe('localPathTarget', () => {
   })
 })
 
+describe('inlineCodePathTarget', () => {
+  it('accepts filesystem-rooted, home-relative, and file:// tokens', () => {
+    expect(inlineCodePathTarget('/home/u/a.py:3')).toBe('/home/u/a.py')
+    expect(inlineCodePathTarget('/mnt/c/Users/u/x.txt')).toBe('/mnt/c/Users/u/x.txt')
+    expect(inlineCodePathTarget('~/repo')).toBe('~/repo')
+    expect(inlineCodePathTarget('file:///srv/x')).toBe('/srv/x')
+  })
+
+  it('leaves slash commands and HTTP routes inert', () => {
+    expect(inlineCodePathTarget('/goal')).toBeUndefined()
+    expect(inlineCodePathTarget('/compact')).toBeUndefined()
+    expect(inlineCodePathTarget('/v1/models')).toBeUndefined()
+    expect(inlineCodePathTarget('/open-in-app/reveal')).toBeUndefined()
+  })
+})
+
 describe('AssistantMarkdown local-path links', () => {
   function renderText(text: string): HTMLElement {
     return render(
@@ -65,7 +81,7 @@ describe('AssistantMarkdown local-path links', () => {
   })
 
   it('keeps web links as anchors and ordinary code inert', () => {
-    const container = renderText('See [docs](https://example.com/d) and run `make test`.')
+    const container = renderText('See [docs](https://example.com/d) and run `make test` or `/goal`.')
     expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.com/d')
     expect(container.querySelector('button')).toBeNull()
   })

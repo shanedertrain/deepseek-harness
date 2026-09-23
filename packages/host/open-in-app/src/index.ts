@@ -357,7 +357,11 @@ export function apply(ctx: Context, config: Config): void {
         sendJson(res, 400, { code: 'bad-request', message: 'request body must be JSON with string "path"' })
         return
       }
-      const outcome = await revealInExplorer(parsed.path, { ...defaultRevealInternals, ...internals.reveal })
+      const outcome = await revealInExplorer(parsed.path, {
+        ...defaultRevealInternals,
+        resolveExecutable: name => catalogInternals().resolveExecutable?.(name) ?? Promise.resolve(null),
+        ...internals.reveal,
+      })
       switch (outcome.kind) {
         case 'revealed':
           sendJson(res, 200, { ok: true })

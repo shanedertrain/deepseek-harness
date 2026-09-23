@@ -502,7 +502,11 @@ describe('open-in-app host routes (real Loader composition)', () => {
       home: '/home/u',
       kind: path => Promise.resolve(path === '/home/u/a.txt' ? 'file' : path === '/home/u/dir' ? 'directory' : undefined),
       run: (_command, args) => Promise.resolve(`\\\\wsl.localhost\\Distro${String(args[1]).replaceAll('/', '\\')}\n`),
-      launch: (command, args) => { launches.push([command, ...args]) },
+      launch: (command, args) => {
+        launches.push([command, ...args])
+        return Promise.resolve()
+      },
+      resolveExecutable: name => Promise.resolve(name === 'explorer.exe' ? '/win/explorer.exe' : null),
     }
     const base = await boot()
     const post = (body: string, type = 'application/json'): Promise<Response> =>
@@ -510,8 +514,8 @@ describe('open-in-app host routes (real Loader composition)', () => {
     expect((await post(JSON.stringify({ path: '~/a.txt' }))).status).toBe(200)
     expect((await post(JSON.stringify({ path: '/home/u/dir' }))).status).toBe(200)
     expect(launches).toEqual([
-      ['explorer.exe', '/select,\\\\wsl.localhost\\Distro\\home\\u\\a.txt'],
-      ['explorer.exe', '\\\\wsl.localhost\\Distro\\home\\u\\dir'],
+      ['/win/explorer.exe', '/select,\\\\wsl.localhost\\Distro\\home\\u\\a.txt'],
+      ['/win/explorer.exe', '\\\\wsl.localhost\\Distro\\home\\u\\dir'],
     ])
     expect((await post(JSON.stringify({ path: '/home/u/missing' }))).status).toBe(404)
     expect((await post(JSON.stringify({ path: 'relative/x' }))).status).toBe(400)
@@ -526,7 +530,7 @@ describe('open-in-app host routes (real Loader composition)', () => {
     internals.catalog = { platform: 'aix', resolveExecutable: pathTable() }
     internals.reveal = {
       env: {}, platform: 'linux', kernelVersion: () => Promise.resolve('Linux version 6.8.0-generic'),
-      kind: () => Promise.resolve('file'), launch: () => { throw new Error('must not launch') },
+      kind: () => Promise.resolve('file'), launch: () => Promise.reject(new Error('must not launch')),
     }
     const base = await boot()
     const post = (): Promise<Response> => fetch(`${base}/open-in-app/reveal`, {
@@ -541,5 +545,21 @@ describe('open-in-app host routes (real Loader composition)', () => {
     const failed = await post()
     expect(failed.status).toBe(502)
     expect(((await failed.json()) as { message: string }).message).toMatch(/wslpath failed/)
+    internals.reveal = {
+      ...internals.reveal,
+      run: () => Promise.resolve('C:\\x\n'),
+      resolveExecutable: () => Promise.resolve(null),
+    }
+    const noExplorer = await post()
+    expect(noExplorer.status).toBe(502)
+    expect(((await noExplorer.json()) as { message: string }).message).toMatch(/not on the Host PATH/)
+    internals.reveal = {
+      ...internals.reveal,
+      resolveExecutable: () => Promise.resolve('/win/explorer.exe'),
+      launch: () => Promise.reject(new Error('spawn ENOENT')),
+    }
+    const spawnFailed = await post()
+    expect(spawnFailed.status).toBe(502)
+    expect(((await spawnFailed.json()) as { message: string }).message).toMatch(/spawn ENOENT/)
   })
 })

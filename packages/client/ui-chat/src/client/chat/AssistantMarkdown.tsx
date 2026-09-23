@@ -29,6 +29,21 @@ export function localPathMediaUrl(protocol: string, origin: string, value: strin
 const REVEAL_ROUTE = '/open-in-app/reveal'
 
 /**
+ * First segments an inline-code token must start under to count as a path:
+ * prose is full of `/goal`, `/compact` and `/v1/models`, which are commands
+ * and routes, not files. Link destinations skip this — a link is a claim.
+ */
+const INLINE_PATH_ROOTS = new Set(['home', 'mnt', 'tmp', 'etc', 'opt', 'usr', 'var', 'root', 'srv', 'proc', 'run', 'media', 'data'])
+
+/** Whether an inline-code token is plausibly a Host path rather than a command or route. */
+export function inlineCodePathTarget(value: string): string | undefined {
+  const path = localPathTarget(value)
+  if (path === undefined || value.startsWith('file://')) return path
+  if (path.startsWith('~/')) return path
+  return INLINE_PATH_ROOTS.has(path.split('/')[1] ?? '') ? path : undefined
+}
+
+/**
  * The Host path an authored link destination or inline-code token names.
  * @param value - Exactly as written: `/abs/path`, `~/path`, or
  * `file:///abs/path`, optionally suffixed `:line[:col]` or `#L…`.
@@ -112,9 +127,9 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
   const pathLinks = useMemo<MarkdownPathLinks>(() => {
     const { protocol, origin } = window.location
     return {
-      resolve: (value) => {
+      resolve: (value, kind) => {
         if (protocol !== 'http:' && protocol !== 'https:') return undefined
-        const path = localPathTarget(value)
+        const path = kind === 'code' ? inlineCodePathTarget(value) : localPathTarget(value)
         if (path === undefined) return undefined
         return { open: () => { revealPath(origin, path) }, label: `Show ${path} in Explorer`, title: `${path} — show in Explorer` }
       },

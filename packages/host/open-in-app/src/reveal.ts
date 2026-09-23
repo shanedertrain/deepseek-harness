@@ -29,8 +29,10 @@ export interface RevealInternals {
   readonly kind: (path: string) => Promise<'file' | 'directory' | undefined>
   /** Run one program with an argv array; resolves with its stdout, rejects on nonzero exit. */
   readonly run: (command: string, args: readonly string[]) => Promise<string>
-  /** Start one program detached, never waiting on it. */
-  readonly launch: (command: string, args: readonly string[]) => void
+  /** Start one program detached: resolves once it spawned, rejects when it could not. */
+  readonly launch: (command: string, args: readonly string[]) => Promise<void>
+  /** Resolve a PATH name to an executable, or null when it is not on PATH. */
+  readonly resolveExecutable: (name: string) => Promise<string | null>
   /** The Host user's home directory, for `~/` paths. */
   readonly home: string
 }
@@ -69,7 +71,8 @@ export function absoluteRevealPath(path: string, home: string): string | undefin
 /**
  * Reveal one path in Explorer: a file is selected in its folder, a directory
  * is opened. `explorer.exe` exits 1 even on success, so the launch is
- * detached and its exit status never read.
+ * detached and only a failure to spawn counts; broken WSL interop past the
+ * spawn is not detectable here.
  */
 export async function revealInExplorer(path: string, internals: RevealInternals): Promise<RevealOutcome> {
   if (!(await isWsl(internals))) return { kind: 'unsupported' }
@@ -84,8 +87,10 @@ export async function revealInExplorer(path: string, internals: RevealInternals)
     return { kind: 'failed', message: `wslpath failed: ${String(error)}` }
   }
   if (windowsPath === '') return { kind: 'failed', message: 'wslpath returned nothing' }
+  const explorer = await internals.resolveExecutable('explorer.exe')
+  if (explorer === null) return { kind: 'failed', message: 'explorer.exe is not on the Host PATH (WSL interop appendWindowsPath off?)' }
   try {
-    internals.launch('explorer.exe', kind === 'file' ? [`/select,${windowsPath}`] : [windowsPath])
+    await internals.launch(explorer, kind === 'file' ? [`/select,${windowsPath}`] : [windowsPath])
   } catch (error) {
     return { kind: 'failed', message: `explorer.exe failed: ${String(error)}` }
   }
@@ -116,11 +121,15 @@ export const defaultRevealInternals: RevealInternals = {
       else reject(new Error(`${command} exited ${String(code)}`))
     })
   }),
-  launch: (command, args) => {
+  launch: (command, args) => new Promise((resolve, reject) => {
     // Inherits the Host env on purpose: WSL interop needs WSL_INTEROP.
     const child = spawn(command, [...args], { detached: true, stdio: 'ignore' })
-    child.on('error', () => {})
-    child.unref()
-  },
+    child.once('spawn', () => {
+      child.unref()
+      resolve()
+    })
+    child.once('error', reject)
+  }),
+  resolveExecutable: () => Promise.resolve(null),
   home: homedir(),
 }

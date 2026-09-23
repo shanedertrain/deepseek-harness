@@ -164,10 +164,12 @@ export interface MarkdownPathLinks {
   /**
    * Resolve one authored destination or token.
    * @param value - Exactly as the markdown author wrote it.
+   * @param kind - `link` for a link destination, `code` for an inline-code
+   * token (owners should be stricter there: code is often a command).
    * @returns The opener with its accessible label and title, or undefined
    * when the value names no local path.
    */
-  resolve(value: string): { open: () => void; label: string; title: string } | undefined
+  resolve(value: string, kind: 'link' | 'code'): { open: () => void; label: string; title: string } | undefined
 }
 
 /**
@@ -339,7 +341,7 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
       }
       // An absolute Host path the owner can open (e.g. reveal in the OS file
       // manager) gets the same button chrome as a file mention.
-      const local = context.inLink === true ? undefined : context.pathLinks?.resolve(value)
+      const local = context.inLink === true ? undefined : context.pathLinks?.resolve(value, 'code')
       if (local !== undefined) {
         return (
           <code key={key}>
@@ -588,7 +590,7 @@ function renderSafeLink(href: string, children: ReactNode[], key: Key, glyph = t
  * becomes a button instead: the allowlist would otherwise drop it to text.
  */
 function renderAnchor(url: string, children: ReactNode[], key: Key, glyph = true, pathLinks?: MarkdownPathLinks): ReactNode {
-  const local = pathLinks?.resolve(url)
+  const local = pathLinks?.resolve(url, 'link')
   if (local !== undefined) {
     return (
       <button
