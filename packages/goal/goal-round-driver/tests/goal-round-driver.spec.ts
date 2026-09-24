@@ -1116,3 +1116,69 @@ describe('same-session goal driving', () => {
     expect(test.ctx.agents.get(handle.agent.id)).toBeUndefined()
   })
 })
+
+describe('wsl-local: holding goal rounds while subagents run', () => {
+  /** A child agent of `parent` whose single turn runs until `finish()` is called. */
+  async function busyChild(test: Harness): Promise<{ child: Agent; finish: () => void }> {
+    let finish: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { finish = resolve })
+    const childAdapter = new ScriptedAdapter([async function* () { }] as never)
+    childAdapter.stream = async function * (): AsyncIterable<StreamChunk> {
+      await gate
+      yield* textResponse('child done')
+    }
+    test.ctx.llm.registerAdapter(['mock-child'], childAdapter)
+    const child = await test.ctx.agentLoop.create(
+      SessionId(`goal-child-${Math.random()}`),
+      { provider: 'mock-child', model: 'mock' },
+      { parentSession: test.agent.id } as never,
+    )
+    child.followup(createUserMessage({ content: [{ type: 'text', text: 'work' }], source: { kind: 'user' } }))
+    await vi.waitFor(() => { expect(child.status).toBe('running') })
+    return { child, finish: () => finish?.() }
+  }
+
+  afterEach(() => { delete process.env.DSH_GOAL_SUBAGENT_HOLD_MAX_MS })
+
+  it('holds the next round while a child runs and releases it when the child settles', async () => {
+    const test = await harness([textResponse('dispatched'), textResponse('reviewed')])
+    const { child, finish } = await busyChild(test)
+    test.ctx.goals.create(test.agent, { objective: 'coordinate', maxGoalRounds: 2 })
+
+    // Round 1 is the first of this revision, so it is never held.
+    await waitForRequests(test.adapter, 1)
+    await vi.waitFor(() => { expect(test.agent.status).toBe('idle') })
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(test.adapter.requests).toHaveLength(1)
+    expect(test.ctx.goals.get(test.agent)).toMatchObject({ phase: 'active', roundsStarted: 1 })
+
+    finish()
+    await vi.waitFor(() => { expect(child.status).toBe('idle') })
+    await waitForRequests(test.adapter, 2)
+  })
+
+  it('releases one round when the hold cap expires, so a wedged child cannot freeze the goal', async () => {
+    process.env.DSH_GOAL_SUBAGENT_HOLD_MAX_MS = '200'
+    const test = await harness([textResponse('dispatched'), textResponse('inspected')])
+    const { finish } = await busyChild(test)
+    test.ctx.goals.create(test.agent, { objective: 'coordinate', maxGoalRounds: 2 })
+    await waitForRequests(test.adapter, 1)
+    await waitForRequests(test.adapter, 2)
+    finish()
+  })
+
+  it('does not hold when disabled with 0', async () => {
+    process.env.DSH_GOAL_SUBAGENT_HOLD_MAX_MS = '0'
+    const test = await harness([textResponse('one'), textResponse('two')])
+    const { finish } = await busyChild(test)
+    test.ctx.goals.create(test.agent, { objective: 'coordinate', maxGoalRounds: 2 })
+    await waitForRequests(test.adapter, 2)
+    finish()
+  })
+
+  it('does not hold when no child is running', async () => {
+    const test = await harness([textResponse('one'), textResponse('two')])
+    test.ctx.goals.create(test.agent, { objective: 'solo', maxGoalRounds: 2 })
+    await waitForRequests(test.adapter, 2)
+  })
+})

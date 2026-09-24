@@ -43,6 +43,27 @@ interface DriverState {
   requested: boolean
   run: Promise<void> | undefined
   stopping: boolean
+  /** `goalId:revision` of the last round this driver queued (wsl-local subagent hold). */
+  lastRoundKey: string | undefined
+  /** A child of this agent settled since that round was queued. */
+  childSettled: boolean
+  /** When the current hold began, if one is in force. */
+  heldSince: number | undefined
+  /** Wakes the driver when the hold cap expires. */
+  holdTimer: ReturnType<typeof setTimeout> | undefined
+}
+
+/**
+ * wsl-local: longest a goal round is held for running subagents, in ms. `0` disables the
+ * hold. A coordinator whose workers are busy otherwise gets a fresh round the moment its
+ * turn ends, and with nothing to act on it polls: one session spent 460 rounds on
+ * "Round N - steady" in an afternoon. The cap stops a wedged child from freezing the goal:
+ * when it expires, one round is released so the coordinator can inspect.
+ */
+function subagentHoldMaxMs(): number {
+  const raw = process.env.DSH_GOAL_SUBAGENT_HOLD_MAX_MS
+  const parsed = raw === undefined || raw === '' ? Number.NaN : Number(raw)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 30 * 60 * 1000
 }
 
 /** Whether a source identifies an automatic, positive-numbered goal round. */
@@ -88,6 +109,10 @@ export function apply(ctx: Context): void {
       requested: false,
       run: undefined,
       stopping: false,
+      lastRoundKey: undefined,
+      childSettled: false,
+      heldSince: undefined,
+      holdTimer: undefined,
     }
     states.set(agent, state)
     return state
@@ -134,6 +159,64 @@ export function apply(ctx: Context): void {
     }
   }
 
+  /** Children of this exact agent that are mid-turn right now. */
+  function runningChildren(agent: Agent): number {
+    let running = 0
+    for (const candidate of ctx.agents.list()) {
+      if (candidate !== agent && candidate.session.header.parentSession === agent.id
+        && candidate.status === 'running') running += 1
+    }
+    return running
+  }
+
+  function clearHold(state: DriverState): void {
+    if (state.holdTimer !== undefined) clearTimeout(state.holdTimer)
+    state.holdTimer = undefined
+    state.heldSince = undefined
+  }
+
+  /**
+   * wsl-local: whether to hold the next round because this agent's subagents are still
+   * working and none has settled since its last round. The first round of a goal revision
+   * is never held, so a create, resume or edit always reaches the model.
+   */
+  function holdForSubagents(state: DriverState, goal: GoalView): boolean {
+    const maxMs = subagentHoldMaxMs()
+    if (maxMs <= 0 || state.childSettled
+      || state.lastRoundKey !== `${goal.id}:${goal.revision}`) return false
+    const running = runningChildren(state.agent)
+    if (running === 0) return false
+    const now = Date.now()
+    if (state.heldSince === undefined) {
+      state.heldSince = now
+      ctx.logger.info(`goal-round-driver: holding round ${goal.roundsStarted + 1} for agent "${state.agent.id}" while ${running} subagent(s) run`)
+    }
+    const remaining = state.heldSince + maxMs - now
+    if (remaining <= 0) {
+      ctx.logger.warn(`goal-round-driver: releasing round ${goal.roundsStarted + 1} for agent "${state.agent.id}" after the ${maxMs} ms hold cap; ${running} subagent(s) still running`)
+      return false
+    }
+    if (state.holdTimer !== undefined) clearTimeout(state.holdTimer)
+    state.holdTimer = setTimeout(() => {
+      state.holdTimer = undefined
+      requestDrive(state)
+    }, remaining)
+    state.holdTimer.unref?.()
+    return true
+  }
+
+  /** A child settled: release its parent's held round, if the parent is a live goal agent. */
+  function childSettled(child: Agent): void {
+    const parentId = child.session.header.parentSession
+    if (parentId === undefined) return
+    const parent = ctx.agents.get(parentId)
+    if (parent === undefined || parent === child) return
+    const state = states.get(parent)
+    if (state === undefined) return
+    state.childSettled = true
+    requestDrive(state)
+  }
+
   /** Process admitted work at quiescence, then reserve at most one next round. */
   async function drive(state: DriverState): Promise<void> {
     const { agent } = state
@@ -171,6 +254,9 @@ export function apply(ctx: Context): void {
       return
     }
 
+    if (holdForSubagents(state, goal)) return
+    clearHold(state)
+
     const round = goal.roundsStarted + 1
     const content = renderGoalRoundPrompt(goal, round)
     const message = createUserMessage({
@@ -188,6 +274,8 @@ export function apply(ctx: Context): void {
       stale: false,
     }
     state.attempt = reservation
+    state.lastRoundKey = `${goal.id}:${goal.revision}`
+    state.childSettled = false
     try {
       agent.followup(message)
     } catch (error: unknown) {
@@ -249,7 +337,12 @@ export function apply(ctx: Context): void {
     })
 
     ctx.on('agent/created', ({ agent }) => { stateFor(agent) })
-    ctx.on('agent/disposed', ({ agent }) => { states.delete(agent) })
+    ctx.on('agent/disposed', ({ agent }) => {
+      const state = states.get(agent)
+      if (state !== undefined) clearHold(state)
+      states.delete(agent)
+      childSettled(agent)
+    })
     ctx.on('agent/session-start', ({ agent }) => {
       const state = stateFor(agent)
       state.attempt = undefined
@@ -259,6 +352,7 @@ export function apply(ctx: Context): void {
     ctx.on('agent/status', ({ agent, status }) => {
       const state = stateFor(agent)
       if (status === 'idle') {
+        childSettled(agent)
         state.competingQueued = false
         const attempt = state.attempt
         const goal = currentGoal(state)
@@ -438,6 +532,7 @@ export function apply(ctx: Context): void {
       const waits: Promise<void>[] = []
       for (const state of states.values()) {
         state.stopping = true
+        clearHold(state)
         disarm(state)
         const attempt = state.attempt
         if (attempt !== undefined) {
