@@ -474,6 +474,7 @@ describe('apply (perAgent)', () => {
   })
 
   type Header = { id: string; cwd?: string; origin?: string; delegationDepth?: number }
+  type Event = { type: string; data?: { title?: string; source?: { kind: string } } }
 
   // agent/created and agent/disposed are declared by dsh-agent, which this package does not depend on
   const emitAgentEvent = (ctx: Context, event: string, agent: unknown): void => {
@@ -481,11 +482,11 @@ describe('apply (perAgent)', () => {
   }
 
   function fakeAgents(ctx: Context) {
-    const live: { ctx: Context; session: { header: Header } }[] = []
+    const live: { ctx: Context; session: { id: string; header: Header; snapshotEvents: () => Event[] } }[] = []
     ctx.provide('agents', { list: () => live } as never)
-    const spawn = (header: Header, emit: boolean) => {
+    const spawn = (header: Header, emit: boolean, events: Event[] = []) => {
       const scope = createScope(ctx, {})
-      const agent = { ctx: scope.ctx, session: { header } }
+      const agent = { ctx: scope.ctx, session: { id: header.id, header, snapshotEvents: () => events } }
       live.push(agent)
       if (emit) emitAgentEvent(ctx, 'agent/created', agent)
       return { agent, scope }
@@ -535,5 +536,40 @@ describe('apply (perAgent)', () => {
 
     expect(mockClose).toHaveBeenCalled()
     expect(ctx.tools.get('mcp__srv__remote', scopeOf(agent.ctx))).toBeUndefined()
+  })
+  const titled: Config = { ...perAgent, sessionTitleEnv: 'XAGENT_SESSION_TITLE' }
+  const title = (t: string, kind: string): Event => ({ type: 'session/title', data: { title: t, source: { kind } } })
+  const emitSessionEvent = (ctx: Context, sessionId: string, event: Event): void => {
+    (ctx.emit as (thisArg: unknown, name: string, session: unknown, event: unknown) => void)
+      .call(ctx, ctx, 'session/event', { id: sessionId }, event)
+  }
+
+  it('passes the latest user-set title, ignoring generated ones', async () => {
+    const ctx = await mountRegistry()
+    const { spawn } = fakeAgents(ctx)
+    spawn({ id: 's1', cwd: '/w' }, false, [title('Read the docs', 'fallback'), title('Tooling', 'user'), title('Later guess', 'provider')])
+    spawn({ id: 's2', cwd: '/w' }, false, [title('Read the docs', 'fallback')])
+    await apply(ctx, titled)
+    await sleep(20)
+    const spawns = spawnedWith()
+    expect(spawns[0]!.env.XAGENT_SESSION_TITLE).toBe('Tooling')
+    expect('XAGENT_SESSION_TITLE' in spawns[1]!.env).toBe(false)
+  })
+
+  it('remounts a session\'s server when the user renames it', async () => {
+    const ctx = await mountRegistry()
+    const { spawn } = fakeAgents(ctx)
+    const { agent } = spawn({ id: 's1', cwd: '/w' }, false, [title('Tooling', 'user')])
+    await apply(ctx, titled)
+    emitSessionEvent(ctx, 'other', title('Nope', 'user'))
+    emitSessionEvent(ctx, 's1', title('Tooling', 'fallback'))
+    emitSessionEvent(ctx, 's1', title('Tooling', 'user'))
+    await sleep(20)
+    expect(MockStdioTransport).toHaveBeenCalledTimes(1)
+    emitSessionEvent(ctx, 's1', title('Training Data', 'user'))
+    await sleep(300)
+    expect(spawnedWith().map(s => s.env.XAGENT_SESSION_TITLE)).toEqual(['Tooling', 'Training Data'])
+    expect(mockClose).toHaveBeenCalled()
+    expect(ctx.tools.get('mcp__srv__remote', scopeOf(agent.ctx))).toBeDefined()
   })
 })

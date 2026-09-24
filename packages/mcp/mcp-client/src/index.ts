@@ -80,6 +80,12 @@ export interface StdioConfig {
   perAgent?: boolean
   /** With `perAgent`: env var name that receives the session id; empty for none. */
   sessionIdEnv?: string
+  /**
+   * With `perAgent`: env var name that receives the session's title when the
+   * user set it (a rename, not a generated title); empty for none. A later
+   * user rename remounts that session's server with the new title.
+   */
+  sessionTitleEnv?: string
 }
 
 /** Config for connecting to an MCP server over Streamable HTTP (SSE). */
@@ -133,6 +139,7 @@ export const Config = z.union([
     reconnect: Reconnect,
     perAgent: z.boolean().default(false),
     sessionIdEnv: z.string().default(''),
+    sessionTitleEnv: z.string().default(''),
   }),
   z.object({
     transport: z.const('streamable-http'),
@@ -207,17 +214,38 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
 // ---- Per-Agent mode ----
 
 /** The slice of `@deepseek-ai/dsh-agent` this mode reads, kept structural to avoid a package dependency. */
+interface TitleEvent {
+  readonly type: string
+  readonly data?: { readonly title?: unknown; readonly source?: { readonly kind?: unknown } }
+}
+
 interface PerAgentTarget {
   readonly ctx: Context
   readonly session: {
+    readonly id: string
     readonly header: { readonly id: string; readonly cwd?: string; readonly origin?: string; readonly delegationDepth?: number }
+    snapshotEvents(): readonly TitleEvent[]
   }
 }
 
 interface AgentsScope {
   readonly agents: { list(): Iterable<PerAgentTarget> }
   on(name: 'agent/created' | 'agent/disposed', listener: (payload: { agent: PerAgentTarget }) => void): () => void
+  on(name: 'session/event', listener: (session: { readonly id: string }, event: TitleEvent) => void): () => void
   effect(execute: () => () => void, label: string): void
+}
+
+/** The title from a user rename event, or undefined for any other event (generated titles included). */
+function userTitle(event: TitleEvent): string | undefined {
+  if (event.type !== 'session/title' || event.data?.source?.kind !== 'user') return undefined
+  return typeof event.data.title === 'string' ? event.data.title : undefined
+}
+
+/** The latest user-set title in a session's log. */
+function latestUserTitle(agent: PerAgentTarget): string | undefined {
+  let title: string | undefined
+  for (const event of agent.session.snapshotEvents()) title = userTitle(event) ?? title
+  return title
 }
 
 /** This module as a plugin, for mounting one ordinary instance inside each Agent scope. */
@@ -232,22 +260,39 @@ const scopedPlugin = { name, inject, Config, apply }
 function applyPerAgent(ctx: Context, config: StdioConfig): void {
   ctx.inject(['agents'], (raw) => {
     const scope = raw as unknown as AgentsScope
-    const fibers = new Map<PerAgentTarget, { dispose(): unknown }>()
-    const mount = (agent: PerAgentTarget): void => {
+    const fibers = new Map<PerAgentTarget, { fiber: { dispose(): unknown }; title: string | undefined }>()
+    const mount = (agent: PerAgentTarget, title?: string): void => {
       const header = agent.session.header
       if (fibers.has(agent) || header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0) return
-      const env = !config.sessionIdEnv ? config.env : { ...config.env, [config.sessionIdEnv]: header.id }
+      const env = { ...config.env }
+      if (config.sessionIdEnv) env[config.sessionIdEnv] = header.id
+      const named = config.sessionTitleEnv ? (title ?? latestUserTitle(agent)) : undefined
+      if (config.sessionTitleEnv && named !== undefined) env[config.sessionTitleEnv] = named
       const child: StdioConfig = { ...config, perAgent: false, cwd: header.cwd ?? config.cwd, env }
-      fibers.set(agent, agent.ctx.plugin(scopedPlugin, child))
+      fibers.set(agent, { fiber: agent.ctx.plugin(scopedPlugin, child), title: named })
     }
     for (const agent of scope.agents.list()) mount(agent)
     scope.on('agent/created', ({ agent }) => { mount(agent) })
+    if (config.sessionTitleEnv) {
+      scope.on('session/event', (session, event) => {
+        const title = userTitle(event)
+        if (title === undefined) return
+        for (const [agent, entry] of fibers) {
+          if (agent.session.id !== session.id || entry.title === title) continue
+          // Disposal releases the serverName reservation synchronously (effect cleanup), so the
+          // replacement can mount at once; the old child process finishes closing in the background.
+          fibers.delete(agent)
+          void entry.fiber.dispose()
+          mount(agent, title)
+        }
+      })
+    }
     scope.on('agent/disposed', ({ agent }) => {
-      void fibers.get(agent)?.dispose()
+      void fibers.get(agent)?.fiber.dispose()
       fibers.delete(agent)
     })
     scope.effect(() => () => {
-      for (const fiber of fibers.values()) void fiber.dispose()
+      for (const { fiber } of fibers.values()) void fiber.dispose()
       fibers.clear()
     }, 'mcp-client.perAgent')
   })
