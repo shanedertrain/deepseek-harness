@@ -52,5 +52,11 @@ for inst in "$NM"/*/; do
     rsync -rc --delete "${DRY[@]}" --out-format="update $pkg/dist/%n" \
       --backup --backup-dir="$BACKUP/$pkg/dist" "$src/dist/" "$inst/dist/"
   fi
+  # Shipped agent presets are source YAML read at runtime, not build output, so the
+  # lib/ sync above never carried a preset edit into the install.
+  if [ -d "$inst/presets" ] && [ -d "$src/presets" ]; then
+    rsync -rc "${DRY[@]}" --out-format="update $pkg/presets/%n" \
+      --backup --backup-dir="$BACKUP/$pkg/presets" "$src/presets/" "$inst/presets/"
+  fi
 done
 [ ${#DRY[@]} = 0 ] && echo "backup: $BACKUP"

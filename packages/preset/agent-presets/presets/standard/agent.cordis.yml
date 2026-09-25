@@ -144,6 +144,17 @@
   config:
     - id: compaction-basic
       name: '@deepseek-ai/dsh-compaction-basic'
+      # wsl-local: a profile cordis.patch.yml never reaches a preset row (the preset is
+      # mounted by its own include), so this is the only place a threshold takes effect.
+      # Without it GLM's 900k window compacted at the 0.8 default (~720k), and three
+      # coordinators thrashed GLM's ~1.14M-token KV cache. Scoped to GLM: the Qwen
+      # workers (262k) keep the default.
+      config:
+        modelPolicies:
+          - provider: local-dgx
+            model: GLM-5.3-Flash-EXL3
+            thresholdRatio: 0.22
+            retainRatio: 0.08
 
     - id: command-compact
       name: '@deepseek-ai/dsh-command-compact'
