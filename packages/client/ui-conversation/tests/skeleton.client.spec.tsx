@@ -632,6 +632,27 @@ describe('ConversationRoot resident composer', () => {
     expect(root.style.getPropertyValue('--dsh-chat-user-width')).toBe('')
   })
 
+  it('republishes a width a plugin stored when it signals the change', () => {
+    const b = mount(sessionSnapshotOf())
+    const root = b.view.container.querySelector('[data-phase]') as HTMLElement
+    Object.defineProperty(root, 'offsetWidth', { value: 1600, configurable: true })
+    act(() => { fireResize(root) })
+    expect(root.style.getPropertyValue('--dsh-chat-user-width')).toBe('')
+    try {
+      // Stored alone, nothing changes until the column is told.
+      localStorage.setItem('dsh.conversation.contentWidth', '100000')
+      expect(root.style.getPropertyValue('--dsh-chat-user-width')).toBe('')
+      // A fill-sized value clamps to what keeps the handles on-column: 1600 − 176.
+      act(() => { window.dispatchEvent(new Event('dsh:conversation-content-width')) })
+      expect(root.style.getPropertyValue('--dsh-chat-user-width')).toBe('1424px')
+      localStorage.removeItem('dsh.conversation.contentWidth')
+      act(() => { window.dispatchEvent(new Event('dsh:conversation-content-width')) })
+      expect(root.style.getPropertyValue('--dsh-chat-user-width')).toBe('')
+    } finally {
+      localStorage.removeItem('dsh.conversation.contentWidth')
+    }
+  })
+
   it('drag → persist → window clamp round-trip on a width handle', () => {
     const b = mount(sessionSnapshotOf())
     const root = b.view.container.querySelector('[data-phase]') as HTMLElement

@@ -59,4 +59,24 @@ for inst in "$NM"/*/; do
       --backup --backup-dir="$BACKUP/$pkg/presets" "$src/presets/" "$inst/presets/"
   fi
 done
+# Packages this branch adds (scripts/wsl-local/added-packages, one short name per
+# line) are not in the npm install, so the loop above skips them. Install each
+# one the install lacks from its `pnpm pack` tarball (which rewrites workspace:
+# ranges as a publish would); once installed, later deploys update it through
+# the loop. A profile still has to insert it.
+while IFS= read -r pkg; do
+  [ -n "$pkg" ] && [ "${pkg:0:1}" != "#" ] || continue
+  src="${SRC[$pkg]:-}"; inst="$NM/$pkg"
+  [ -n "$src" ] || { echo "added package $pkg has no workspace package" >&2; exit 1; }
+  [ -d "$inst" ] && continue
+  [ -d "$src/lib" ] || { echo "build has no lib/ for $pkg — run the build first" >&2; exit 1; }
+  echo "install $pkg"
+  [ ${#DRY[@]} = 0 ] || continue
+  tmp=$(mktemp -d)
+  (cd "$src" && corepack pnpm pack --pack-destination "$tmp" >/dev/null)
+  mkdir -p "$inst" "$BACKUP/.added"
+  tar -xzf "$tmp"/*.tgz -C "$inst" --strip-components=1
+  rm -rf "$tmp"
+  echo "$pkg" >> "$BACKUP/.added/packages"
+done < "$ROOT/scripts/wsl-local/added-packages"
 [ ${#DRY[@]} = 0 ] && echo "backup: $BACKUP"

@@ -1,0 +1,2 @@
+# Packages the wsl-local branch adds on top of the npm install (see deploy.sh).
+dsh-client-ui-chat-layout

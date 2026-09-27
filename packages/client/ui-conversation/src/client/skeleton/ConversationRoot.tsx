@@ -15,6 +15,9 @@ export type ConversationRootProps = ConversationSlotProps
 
 /** localStorage key for the dragged transcript width preference (px). */
 const WIDTH_PREF_KEY = 'dsh.conversation.contentWidth'
+/** Window event a plugin dispatches after writing {@link WIDTH_PREF_KEY}, so
+ * the open column republishes without waiting for a resize or drag. */
+const WIDTH_PREF_EVENT = 'dsh:conversation-content-width'
 /** Floor for a dragged content width; matches the layout center-column minimum. */
 const CONTENT_MIN = 640
 /** Column budget the content must leave free: 88px per side keeps the width
@@ -232,6 +235,14 @@ export function ConversationRoot({
   const onHandleEnd = useCallback((): void => {
     const root = rootEl.current
     if (root !== null) publishWidths(root)
+  }, [publishWidths])
+  useEffect(() => {
+    const republish = (): void => {
+      const root = rootEl.current
+      if (root !== null) publishWidths(root)
+    }
+    window.addEventListener(WIDTH_PREF_EVENT, republish)
+    return () => { window.removeEventListener(WIDTH_PREF_EVENT, republish) }
   }, [publishWidths])
 
   const sessionWorkspace = sessionId === undefined

@@ -76,6 +76,14 @@ export interface ChatNodeTurnDataInjected {
   hooks: { turnData: SlotHookFactory<'conversation.chat.node', UseChatNodeTurnData> }
 }
 
+/** Owner currency for one Chat Node's gutter entries. */
+export interface ChatNodeGutterOwnerProps {
+  /** The routed Node the gutter sits beside. */
+  node: ChatNode
+  /** Whether this Node is the answer of a folded Turn process (its process rows are hidden). */
+  processAnswer: boolean
+}
+
 /** Stable owner currency delivered to a keyed Chat renderer. */
 export interface ChatNodeOwnerProps {
   cwd?: string | undefined
@@ -154,7 +162,7 @@ export interface ChatViewInjected {
 /** Full Chat view props. */
 export type ChatViewSlotProps =
   PropsRuntime<'conversation.view'>
-  & PropsRenderSlots<'conversation.chat.node' | 'conversation.message.images'>
+  & PropsRenderSlots<'conversation.chat.node' | 'conversation.chat.node.gutter' | 'conversation.message.images'>
   & PropsStore<ChatStore>
   & InjectFace<ChatViewInjected>
   & PropsLocale<'chat'>
@@ -187,6 +195,13 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
       hookContext: ConversationLocationDataStore<ConversationTurnDataMap> | undefined
       inject: ChatNodeTurnDataInjected
     }
+    /**
+     * Additive decorations rendered inside every Chat Node's flow item, before
+     * the Node's renderer. Each entry receives the routed Node and positions
+     * itself (the flow item is the containing row). With no entries, rows are
+     * unchanged.
+     */
+    'conversation.chat.node.gutter': { kind: 'list'; scope: 'session'; owner: ChatNodeGutterOwnerProps }
     /**
      * Renderer for one consecutive group of durable message images. The owner
      * supplies image references, an authorized loader, and alignment. A
