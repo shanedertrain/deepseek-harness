@@ -8,9 +8,6 @@ import { WIDTH_PREF_EVENT, WIDTH_PREF_KEY, widthPreference } from './layout.ts'
 /** Defaults shown before the Host section arrives. */
 const DEFAULTS: ChatLayoutSettings = { widthMode: 'manual', fixedWidth: 1200, timestamps: '24h' }
 
-/** Root attribute that turns on the timestamp gutter's column space (see gutter.css). */
-export const GUTTER_ATTRIBUTE = 'data-dsh-chat-timestamps'
-
 /**
  * Write (or clear) the stored transcript width and ask the open column to
  * republish it. localStorage is a durable-storage boundary that may throw.
@@ -68,7 +65,6 @@ export class ChatLayoutPolicy {
     const previous = this.applied
     this.applied = next
     this.settings.set(next)
-    document.documentElement.toggleAttribute(GUTTER_ATTRIBUTE, next.timestamps !== 'off')
     if (previous !== undefined
       && previous.widthMode === next.widthMode
       && previous.fixedWidth === next.fixedWidth) return

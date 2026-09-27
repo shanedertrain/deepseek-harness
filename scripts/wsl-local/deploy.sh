@@ -60,23 +60,25 @@ for inst in "$NM"/*/; do
   fi
 done
 # Packages this branch adds (scripts/wsl-local/added-packages, one short name per
-# line) are not in the npm install, so the loop above skips them. Install each
-# one the install lacks from its `pnpm pack` tarball (which rewrites workspace:
-# ranges as a publish would); once installed, later deploys update it through
-# the loop. A profile still has to insert it.
+# line) are out-of-tree plugins: a profile's patch names them, and the loader
+# resolves those names from the profile directory, not the installation. So
+# each is (re)installed into $DSH_PROFILE's node_modules from its `pnpm pack`
+# tarball (which rewrites workspace: ranges as a publish would); its shared
+# dependencies fall through to $DSH_HOME/profiles/node_modules. The profile's
+# cordis.patch.yml still has to insert it.
+PROFILE_NM="${DSH_PROFILE:-$(cd "$DSH_APP/.." && pwd)/profiles/web}/node_modules/@deepseek-ai"
 while IFS= read -r pkg; do
   [ -n "$pkg" ] && [ "${pkg:0:1}" != "#" ] || continue
-  src="${SRC[$pkg]:-}"; inst="$NM/$pkg"
+  src="${SRC[$pkg]:-}"; inst="$PROFILE_NM/$pkg"
   [ -n "$src" ] || { echo "added package $pkg has no workspace package" >&2; exit 1; }
-  [ -d "$inst" ] && continue
   [ -d "$src/lib" ] || { echo "build has no lib/ for $pkg — run the build first" >&2; exit 1; }
-  echo "install $pkg"
+  echo "install $pkg -> $inst"
   [ ${#DRY[@]} = 0 ] || continue
   tmp=$(mktemp -d)
   (cd "$src" && corepack pnpm pack --pack-destination "$tmp" >/dev/null)
-  mkdir -p "$inst" "$BACKUP/.added"
+  if [ -d "$inst" ]; then mkdir -p "$BACKUP/.profile"; mv "$inst" "$BACKUP/.profile/$pkg"; fi
+  mkdir -p "$inst"
   tar -xzf "$tmp"/*.tgz -C "$inst" --strip-components=1
   rm -rf "$tmp"
-  echo "$pkg" >> "$BACKUP/.added/packages"
 done < "$ROOT/scripts/wsl-local/added-packages"
 [ ${#DRY[@]} = 0 ] && echo "backup: $BACKUP"

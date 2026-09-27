@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect } from 'react'
 import type {
-  AssistantMessageNode, ChatNode, ChatNodeOwnerProps, ChatNodeViewProps, ChatSnapshot,
+  AssistantMessageNode, ChatNode, ChatNodeGutterOwnerProps, ChatNodeOwnerProps, ChatNodeViewProps, ChatSnapshot,
   ChatViewSlotProps, CommandNode, CompactionSummaryNode, ContextMessageNode, ConversationNode,
   LegacyConversationSlice, ModelRetryNode, RunningToolCall, SteeringMessageNode,
   ToolCallBlock, ToolResultNode, TurnErrorNode, TurnMaxTokensNode, UseChatNodeTurnData,
@@ -280,11 +280,13 @@ function makeHarness(
   const renderTurnTailSlot = (() => null) as unknown as
     React.ComponentProps<typeof TurnTailNodeView>['renderSlot']
   let nodeSlotOverride: React.ComponentProps<typeof ChatNodeSeat>['renderSlot'] | undefined
+  const gutterOwners: ChatNodeGutterOwnerProps[] = []
   const renderNodeSlot = ((key: string, owner: object, opts?: {
     fallback?: React.ReactNode
     hookContext?: unknown
   }) => {
     if (nodeSlotOverride !== undefined) return nodeSlotOverride(key as never, owner as never, opts as never)
+    if (key === 'conversation.chat.node.gutter') gutterOwners.push(owner as ChatNodeGutterOwnerProps)
     if (key !== 'conversation.chat.node') return opts?.fallback ?? null
     const nodeOwner = owner as RoutedChatNodeOwner
     const turnData = opts?.hookContext as
@@ -427,7 +429,7 @@ function makeHarness(
     set, setSession: session.set, setChat: chatSource.set, ChatView, props,
     openFile, loadOlder, loadThrough, openView,
     setOutline: (value: unknown) => { outlineValue = value },
-    chatScroll, forkAt, toolOwners,
+    chatScroll, forkAt, toolOwners, gutterOwners,
     setTranscriptView: (mode: TranscriptViewMode) => { transcriptView.set(mode) },
     setNodeRenderer: (renderer: React.ComponentProps<typeof ChatNodeSeat>['renderSlot']) => {
       nodeSlotOverride = renderer
@@ -2162,6 +2164,30 @@ describe('ChatView', () => {
       }] })
     })
     expect(status.textContent).toMatch(/^深度求索中\.\.\.2分0\d秒$/)
+  })
+
+  it('flags the answer of a folded Turn process to the gutter, steering or not', () => {
+    for (const between of [[], [steering(3, 'also mention safety', 1)]]) {
+      const h = makeHarness({
+        nodes: [
+          user(1, 'question'),
+          reasoningAssistant(2, 'inspect', 1, 1),
+          ...between,
+          assistant(4, 'final answer', 1, 2),
+        ],
+        turnEnds: new Map([[1, 5]]),
+      })
+      const latest = (): Map<number, boolean> => new Map(h.gutterOwners
+        .filter(owner => owner.node.kind === 'assistant-step')
+        .map(owner => [(owner.node.data as { step: number }).step, owner.processAnswer]))
+      const view = render(<h.ChatView {...h.props} />)
+      // Folded: step 1 is hidden, so the answer carries the reply's time.
+      expect(latest()).toEqual(new Map([[1, false], [2, true]]))
+      // Expanded: step 1 shows again and the answer stops claiming it.
+      fireEvent.click(turnProcessControl(view.container)!)
+      expect(latest()).toEqual(new Map([[1, false], [2, false]]))
+      view.unmount()
+    }
   })
 
   it('hands each ordered root call to the keyed business-node slot', () => {

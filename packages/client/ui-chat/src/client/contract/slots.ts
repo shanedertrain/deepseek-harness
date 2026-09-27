@@ -80,7 +80,7 @@ export interface ChatNodeTurnDataInjected {
 export interface ChatNodeGutterOwnerProps {
   /** The routed Node the gutter sits beside. */
   node: ChatNode
-  /** Whether this Node is the answer of a folded Turn process (its process rows are hidden). */
+  /** Whether this Node is the answer of a closed, folded Turn process (its earlier steps are hidden). */
   processAnswer: boolean
 }
 

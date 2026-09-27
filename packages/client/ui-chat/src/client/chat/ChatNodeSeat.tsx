@@ -133,7 +133,10 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
       data-turn-process-hidden={processHidden || undefined}
       data-turn-process-answer={compactAnswer || undefined}
     >
-      {renderSlot('conversation.chat.node.gutter', { node: routedNode, processAnswer: compactAnswer })}
+      {renderSlot('conversation.chat.node.gutter', {
+        node: routedNode,
+        processAnswer: processAnswer && foldable && !processOpen,
+      })}
       {renderSlot('conversation.chat.node', routedOwner, {
         entryKey: routedNode.kind,
         hookContext: turnData,

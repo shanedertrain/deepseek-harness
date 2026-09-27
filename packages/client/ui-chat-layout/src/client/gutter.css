@@ -1,9 +1,11 @@
 /* Timestamp gutter: global because it styles ui-chat's flow rows through their
    stable data attributes (the renderer's module classes are hashed). Enabled
-   by the root attribute the chat layout policy toggles. The column gives up
-   its left edge to the gutter, and each flow item anchors its own time. */
+   by the root attribute the plugin toggles. The column gives up its left edge
+   to the gutter inside the shared chat width (border-box, so the width
+   handles keep their clearance), and each flow item anchors its own time. */
 
-html[data-dsh-chat-timestamps] :has(> [data-chat-flow-key]) {
+html[data-dsh-chat-timestamps] [data-chat-flow] {
+  box-sizing: border-box;
   padding-left: var(--dsh-chat-gutter-width, 64px);
 }
 
@@ -11,7 +13,7 @@ html[data-dsh-chat-timestamps] [data-chat-flow-key] {
   position: relative;
 }
 
-.dsh-chat-gutter {
+html[data-dsh-chat-timestamps] .dsh-chat-gutter {
   position: absolute;
   top: 0;
   left: calc(-1 * var(--dsh-chat-gutter-width, 64px));
@@ -29,12 +31,12 @@ html[data-dsh-chat-timestamps] [data-chat-flow-key] {
 }
 
 /* User bubbles sit a few px lower than the row top; align the clock with their first line. */
-[data-chat-flow-kind='user'] .dsh-chat-gutter,
-[data-chat-flow-kind='steering'] .dsh-chat-gutter {
+html[data-dsh-chat-timestamps] [data-chat-flow-kind='user'] .dsh-chat-gutter,
+html[data-dsh-chat-timestamps] [data-chat-flow-kind='steering'] .dsh-chat-gutter {
   top: 10px;
 }
 
-.dsh-chat-gutter-day {
+html[data-dsh-chat-timestamps] .dsh-chat-gutter-day {
   font-size: 11px;
   opacity: 0.8;
 }

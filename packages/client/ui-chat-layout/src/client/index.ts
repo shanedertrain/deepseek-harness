@@ -18,7 +18,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import { CHAT_LAYOUT_SETTINGS_NAMESPACE, type ChatLayoutSettings, type TimestampMode } from '../chat-layout-contract.ts'
 import { ChatGutter, type ChatGutterInjected } from './ChatGutter.tsx'
-import { ChatLayoutPolicy, GUTTER_ATTRIBUTE } from './policy.ts'
+import { ChatLayoutPolicy } from './policy.ts'
 import { ChatWidthRow, TimestampsRow, type ChatLayoutRowInjected } from './SettingsRows.tsx'
 import { en, zh, type ChatLayoutKey } from './locales.ts'
 import './gutter.css'
@@ -26,6 +26,9 @@ import './gutter.css'
 export type { ChatGutterInjected, ChatGutterProps } from './ChatGutter.tsx'
 export type { ChatLayoutRowInjected, ChatLayoutRowProps } from './SettingsRows.tsx'
 export type { ChatLayoutKey } from './locales.ts'
+
+/** Root attribute that turns on the timestamp gutter (see gutter.css). */
+const GUTTER_ATTRIBUTE = 'data-dsh-chat-timestamps'
 
 /** Dictionary namespace owned by this plugin. */
 const NS = 'chat-layout'
@@ -47,10 +50,22 @@ export const inject = ['slots', 'locale', 'remote', 'settingsScope']
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-chat-layout: dictionaries')
   const policy = new ChatLayoutPolicy(ctx.settingsScope.bind<ChatLayoutSettings>({ namespace: CHAT_LAYOUT_SETTINGS_NAMESPACE }))
-  ctx.effect(() => () => { document.documentElement.removeAttribute(GUTTER_ATTRIBUTE) }, 'ui-chat-layout: gutter attribute')
 
-  // The gutter reads only the timestamp mode, so a width change does not re-render every row.
+  // The gutter reads only the timestamp mode, so a width change does not
+  // re-render every row. The root attribute that gives the gutter its column
+  // space follows the same store the gutter renders from, so a label never
+  // shows without its positioning context (defaults, memory mode included).
   const timestamps = createSnapshotStore<TimestampMode>(policy.settings.getSnapshot().timestamps)
+  const root = document.documentElement
+  const mark = (): void => { root.toggleAttribute(GUTTER_ATTRIBUTE, timestamps.getSnapshot() !== 'off') }
+  mark()
+  ctx.effect(() => {
+    const unsubscribe = timestamps.subscribe(mark)
+    return () => {
+      unsubscribe()
+      root.removeAttribute(GUTTER_ATTRIBUTE)
+    }
+  }, 'ui-chat-layout: gutter attribute')
   ctx.effect(() => policy.settings.subscribe(() => {
     timestamps.set(policy.settings.getSnapshot().timestamps)
   }), 'ui-chat-layout: timestamp mirror')
