@@ -138,7 +138,8 @@
       # RETAINED prefix cache (~509k: 710 block ids, ~5 per 3,584-token cached segment), not its
       # 2.02M running-request KV figure. 0.2222 = 200k: three coordinators swinging 72k-200k
       # average ~410k and fit; all three at peak (600k) costs one cold re-read. Scoped to GLM:
-      # Qwen workers: 0.5 of 262k = 131k. Both route names alias ONE TP2 pool (hibrid48, bf16 KV
+      # maxTokens 16384 (default 8192): summaries hit the cap when the model thinks (13 GLM truncations,
+      # ~70 Qwen worker failures 2026-09-27). Qwen workers: 0.5 of 262k = 131k. Both route names alias ONE TP2 pool (hibrid48, bf16 KV
       # 2.45M) advertised at 16 concurrent workers; at the 0.8 default 16 x 210k = 3.4M overflows
       # it, 16 x 131k = 2.1M fits. Measured 2026-09-27 over 197 worker sessions: peak p50 124k,
       # p90 209k, so about half never reach 131k.
@@ -148,14 +149,17 @@
             model: GLM-5.3-Flash-EXL3
             thresholdRatio: 0.2222
             retainRatio: 0.08
+            maxTokens: 16384
           - provider: qwen-8458
             model: qwen3.8-flash-next
             thresholdRatio: 0.5
             retainRatio: 0.08
+            maxTokens: 16384
           - provider: qwen-8fe0
             model: qwen3.8-flash-next
             thresholdRatio: 0.5
             retainRatio: 0.08
+            maxTokens: 16384
 
     - id: command-compact
       name: '@deepseek-ai/dsh-command-compact'
