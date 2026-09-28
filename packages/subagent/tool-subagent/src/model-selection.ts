@@ -87,6 +87,28 @@ function assertNonEmpty(value: string | undefined, field: keyof DelegationModelR
 }
 
 /**
+ * Repair a route alias written into `model`. Models on this site sometimes send
+ * `model: "<provider id>"` (or `provider: A, model: B` with both provider ids)
+ * instead of the provider's model id. When the named provider has exactly one
+ * allowed route, that route is unambiguous, so it is used instead of refusing.
+ * @param policy - Selection authority captured for this Session.
+ * @param request - Model-facing selection fields from the tool call.
+ * @returns The request, with an unambiguous alias rewritten to its exact route.
+ */
+export function normalizeDelegationModelRequest(
+  policy: ModelSelectionPolicy | undefined,
+  request: DelegationModelRequest,
+): DelegationModelRequest {
+  if (policy === undefined || request.model === undefined) return request
+  const exact = policy.routes.some(route =>
+    route.model === request.model && (request.provider === undefined || route.provider === request.provider))
+  if (exact) return request
+  const [route, ...others] = policy.routes.filter(candidate => candidate.provider === request.model)
+  if (route === undefined || others.length > 0) return request
+  return { ...request, provider: route.provider, model: route.model }
+}
+
+/**
  * Merge model-supplied selection fields over configured child defaults.
  * Provider and model form one route and must be supplied together. Changing
  * that route without an effort clears the configured route-owned effort.
@@ -149,7 +171,8 @@ export function assertAllowedModelSelection(
     throw new Error('cannot select child LLM values without an effective provider and model')
   }
   if (policy.routes.some(route => route.provider === provider && route.model === model)) return
-  throw new Error(`child LLM route "${provider}/${model}" is not allowed for this Session`)
+  const allowed = policy.routes.map(route => `provider "${route.provider}" + model "${route.model}"`).join('; ')
+  throw new Error(`child LLM route "${provider}/${model}" is not allowed for this Session. Allowed: ${allowed}`)
 }
 
 /**
